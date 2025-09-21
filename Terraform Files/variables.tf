@@ -49,5 +49,5 @@ variable "web_port" {
 variable "deploy_user" {
   description = "Linux user for CI/CD SSH"
   type        = string
-  default     = "ojay-deploy-user"
+  default     = "ubuntu"
 }
