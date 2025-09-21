@@ -3,6 +3,7 @@ name: Deploy static site to EC2 (port 8080)
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -12,12 +13,51 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Show tree (diagnostic)
+        run: |
+          echo "==== REPO TREE ===="
+          ls -la
+          echo "==== SUBDIR TREE (if present) ===="
+          [ -d 2139_neural_portfolio ] && ls -la 2139_neural_portfolio || echo "Folder 2139_neural_portfolio not found"
+
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          # Strip CRLF just in case key was pasted with Windows newlines
+          tr -d '\r' < ~/.ssh/id_rsa > ~/.ssh/id_rsa.clean && mv ~/.ssh/id_rsa.clean ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           printf "Host *\nStrictHostKeyChecking no\n" > ~/.ssh/config
+
+      - name: Check secrets (diagnostic)
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          EC2_HOST:    ${{ secrets.EC2_HOST }}
+          SSH_PORT:    ${{ secrets.SSH_PORT }}
+        run: |
+          : "${DEPLOY_USER:?Missing DEPLOY_USER secret}"
+          : "${EC2_HOST:?Missing EC2_HOST secret}"
+          : "${SSH_PORT:=22}"
+          echo "Using DEPLOY_USER=$DEPLOY_USER EC2_HOST=$EC2_HOST SSH_PORT=$SSH_PORT"
+
+      - name: SSH connectivity test (diagnostic)
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          EC2_HOST:    ${{ secrets.EC2_HOST }}
+          SSH_PORT:    ${{ secrets.SSH_PORT }}
+        run: |
+          : "${SSH_PORT:=22}"
+          set -x
+          ssh -o BatchMode=yes -p "$SSH_PORT" -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no "$DEPLOY_USER@$EC2_HOST" 'echo "SSH OK on $(hostname)"; exit 0'
+
+      - name: Choose upload source
+        id: picksrc
+        run: |
+          if [ -d "2139_neural_portfolio" ]; then
+            echo "src=2139_neural_portfolio/*" >> $GITHUB_OUTPUT
+          else
+            echo "src=./*" >> $GITHUB_OUTPUT
+          fi
 
       - name: Upload site
         env:
@@ -25,10 +65,9 @@ jobs:
           EC2_HOST:    ${{ secrets.EC2_HOST }}
           SSH_PORT:    ${{ secrets.SSH_PORT }}
         run: |
-          : "${DEPLOY_USER:?Missing DEPLOY_USER}"
-          : "${EC2_HOST:?Missing EC2_HOST}"
           : "${SSH_PORT:=22}"
-          scp -P "$SSH_PORT" -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -r 2139_neural_portfolio/* \
+          echo "Uploading from: ${{ steps.picksrc.outputs.src }}"
+          scp -v -P "$SSH_PORT" -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -r ${{ steps.picksrc.outputs.src }} \
              "$DEPLOY_USER@$EC2_HOST:/tmp/site"
 
       - name: Publish to Nginx webroot & reload
@@ -37,9 +76,11 @@ jobs:
           EC2_HOST:    ${{ secrets.EC2_HOST }}
           SSH_PORT:    ${{ secrets.SSH_PORT }}
         run: |
+          : "${SSH_PORT:=22}"
           ssh -p "$SSH_PORT" -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no \
             "$DEPLOY_USER@$EC2_HOST" "\
               sudo rm -rf /var/www/html/* && \
+              sudo mkdir -p /var/www/html && \
               sudo mv /tmp/site/* /var/www/html/ && \
               sudo chown -R www-data:www-data /var/www/html && \
               sudo systemctl reload nginx \
